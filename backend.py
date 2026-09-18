@@ -4,7 +4,7 @@ from pydantic import BaseModel
 app = FastAPI(
     title="ClaimTriage Enterprise Backend",
     description="Clinical Risk & Underwriting Adjudication Engine",
-    version="3.3",
+    version="3.4",
 )
 
 
@@ -27,7 +27,6 @@ def evaluate_scheme_eligibility(
 ):
   eligible_schemes = []
 
-  # Public Safety Net Rules (e.g., Ayushman Bharat PM-JAY threshold guidelines)
   if income <= 500000 or age >= 70:
     eligible_schemes.append({
         "scheme_code": "PUB_PMJAY",
@@ -69,8 +68,7 @@ def adjudicate_claim_endpoint(data: AssessmentRequest):
   risk_points = 0
   risk_reasons = []
 
-  # 1. Age & Demographic Risk Weighting (Strict Geriatric Thresholds Added)
-  gender_lower = data.gender.strip().lower()
+  # 1. Age & Demographic Risk Weighting
   if data.age >= 80:
     risk_points += 5
     risk_reasons.append(
@@ -86,7 +84,7 @@ def adjudicate_claim_endpoint(data: AssessmentRequest):
     risk_points += 2
     risk_reasons.append(f"Elevated age bracket ({data.age} years)")
 
-  # 2. BMI Evaluation (WHO Normal: 18.5 - 24.9)
+  # 2. BMI Evaluation
   if data.bmi > 30.0:
     risk_points += 2
     risk_reasons.append(f"Obesity indicator flagged (BMI: {data.bmi})")
@@ -94,7 +92,7 @@ def adjudicate_claim_endpoint(data: AssessmentRequest):
     risk_points += 1
     risk_reasons.append(f"Underweight indicator flagged (BMI: {data.bmi})")
 
-  # 3. Glucose Evaluation (Normal: 70 - 99 mg/dL)
+  # 3. Glucose Evaluation
   if data.avg_glucose_level >= 126.0:
     risk_points += 3
     risk_reasons.append(
@@ -139,17 +137,19 @@ def adjudicate_claim_endpoint(data: AssessmentRequest):
   is_ped_waiting_breach = data.policy_tenure_months < 24 and has_pre_existing == 1
   is_initial_wait_breach = data.policy_tenure_months < 1
 
-  # Probability Calculation
-  approval_prob = 0.90
+  # Clean Probability Calculations (Ensuring non-zero scaling)
   if risk_tier == "HIGH RISK":
-    approval_prob -= 0.55
+    approval_prob = 0.35
   elif risk_tier == "MODERATE RISK":
-    approval_prob -= 0.25
+    approval_prob = 0.65
+  else:
+    approval_prob = 0.90
 
+  # Override to 0 only on true contractual/legal breaches
   if is_excess or is_ped_waiting_breach or is_initial_wait_breach:
     approval_prob = 0.0
 
-  final_prob_str = f"{max(0.0, approval_prob) * 100:.1f}%"
+  final_prob_str = f"{approval_prob * 100:.1f}%"
 
   # Decision Code Matrix
   if is_excess:
@@ -167,7 +167,7 @@ def adjudicate_claim_endpoint(data: AssessmentRequest):
             " waiting window."
         ),
     )
-  elif approval_prob < 0.5:
+  elif risk_tier == "HIGH RISK" or approval_prob < 0.5:
     decision, code, reason = (
         "FLAGGED FOR AUDIT / DENIED",
         "D3_RISK_THRESHOLD",
