@@ -1,1037 +1,332 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 import streamlit as st
-
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
-
+# -------------------------------------------------------------
+# PAGE CONFIGURATION & ENTERPRISE STYLING
+# -------------------------------------------------------------
 st.set_page_config(
-    page_title="Claim Assessment",
+    page_title="Claim Triage | Enterprise Underwriting Platform",
+    page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded"
+)
+
+st.title("🛡️ Claim Triage: Automated Insurance Adjudication Engine")
+st.markdown(
+    "Enterprise-grade risk profiling and policy validation platform combining"
+    " clinical baselines with financial underwriting rules."
 )
 
 
-# =========================================================
-# LOAD HEALTH DATA
-# =========================================================
-
-@st.cache_data
-def load_health_data():
-
-    df = pd.read_csv("stroke_prediction.csv")
-
-    df = df.dropna()
-
-    if "id" in df.columns:
-        df = df.drop(columns=["id"])
-
-    if "stroke" not in df.columns:
-        st.error("stroke_prediction.csv must contain a 'stroke' column.")
-        st.stop()
-
-    df["target_flag"] = df["stroke"]
-
-    df = df.drop(columns=["stroke"])
-
-    return df
-
-
-health_df = load_health_data()
-
-X_health = health_df.drop(columns=["target_flag"])
-y_health = health_df["target_flag"]
-
-
-# =========================================================
-# TRAIN HEALTH MODEL
-# =========================================================
-
+# -------------------------------------------------------------
+# 1. CACHED DATA LOADING & MODEL TRAINING
+# -------------------------------------------------------------
 @st.cache_resource
-def train_health_model(X, y):
+def load_and_train_model():
+  np.random.seed(42)
+  n_samples = 2500
 
-    numeric_features = X.select_dtypes(
-        include=[
-            "int64",
-            "float64",
-            "int32",
-            "float32"
-        ]
-    ).columns.tolist()
+  age = np.random.randint(18, 85, size=n_samples)
+  policy_tenure_months = np.random.randint(1, 120, size=n_samples)
+  annual_premium = np.random.uniform(300, 3500, size=n_samples).round(2)
+  pre_existing_conditions = np.random.choice([0, 1], size=n_samples, p=[0.7, 0.3])
+  claim_amount = np.random.uniform(200, 25000, size=n_samples).round(2)
+  policy_coverage_limit = np.random.choice(
+      [5000, 10000, 20000, 50000], size=n_samples
+  )
 
-    categorical_features = X.select_dtypes(
-        include=[
-            "object",
-            "category",
-            "bool"
-        ]
-    ).columns.tolist()
+  treatment_types = np.random.choice(
+      ["Outpatient", "Inpatient", "Dental", "Emergency", "Elective Surgery"],
+      size=n_samples,
+      p=[0.35, 0.25, 0.15, 0.15, 0.10],
+  )
+  hospital_network = np.random.choice(
+      ["In-Network", "Out-Network"], size=n_samples, p=[0.75, 0.25]
+  )
+  prior_claims_count = np.random.poisson(lam=1.2, size=n_samples)
 
-    try:
-        encoder = OneHotEncoder(
-            handle_unknown="ignore",
-            sparse_output=False
+  exceeds_limit = claim_amount > policy_coverage_limit
+  early_preexisting = (policy_tenure_months < 6) & (
+      pre_existing_conditions == 1
+  )
+  unauthorized_elective = (hospital_network == "Out-Network") & (
+      treatment_types == "Elective Surgery"
+  )
+  too_elderly = age > 70  # NEW RULE: Deny coverage for age > 70
+
+  claim_approved = []
+  claim_status_codes = []
+  adjudication_reasons = []
+
+  for i in range(n_samples):
+    if (
+        exceeds_limit[i]
+        or early_preexisting[i]
+        or unauthorized_elective[i]
+        or too_elderly[i]
+    ):
+      approved = np.random.choice([0, 1], p=[0.88, 0.12])
+    else:
+      approved = np.random.choice([1, 0], p=[0.85, 0.15])
+
+    claim_approved.append(approved)
+
+    if approved == 1:
+      claim_status_codes.append("PA_100")
+      adjudication_reasons.append("Approved: Claim met coverage guidelines")
+    else:
+      if too_elderly[i]:
+        claim_status_codes.append("D5_AGE")
+        adjudication_reasons.append(
+            "Denied: Age exceeds maximum underwriting demographic limit (>70"
+            " yrs)"
         )
-    except TypeError:
-        encoder = OneHotEncoder(
-            handle_unknown="ignore",
-            sparse=False
+      elif exceeds_limit[i]:
+        claim_status_codes.append("D1_EXP")
+        adjudication_reasons.append(
+            "Denied: Amount exceeds policy coverage limit"
+        )
+      elif early_preexisting[i]:
+        claim_status_codes.append("D2_PRX")
+        adjudication_reasons.append(
+            "Denied: Pre-existing condition within waiting period (<6 mo)"
+        )
+      elif unauthorized_elective[i]:
+        claim_status_codes.append("D3_OON")
+        adjudication_reasons.append(
+            "Denied: Unauthorized out-of-network elective procedure"
+        )
+      else:
+        claim_status_codes.append("D4_GEN")
+        adjudication_reasons.append(
+            "Denied: Incomplete documentation or standard policy exclusions"
         )
 
-    preprocessor = ColumnTransformer(
-        transformers=[
-            (
-                "numeric",
-                StandardScaler(),
-                numeric_features
-            ),
-            (
-                "categorical",
-                encoder,
-                categorical_features
-            )
-        ]
-    )
+  df = pd.DataFrame({
+      "age": age,
+      "policy_tenure_months": policy_tenure_months,
+      "annual_premium": annual_premium,
+      "pre_existing_conditions": pre_existing_conditions,
+      "treatment_type": treatment_types,
+      "hospital_network": hospital_network,
+      "claim_amount": claim_amount,
+      "policy_coverage_limit": policy_coverage_limit,
+      "prior_claims_count": prior_claims_count,
+      "claim_approved": claim_approved,
+      "claim_status_code": claim_status_codes,
+      "adjudication_reason": adjudication_reasons,
+  })
 
-    model = Pipeline(
-        steps=[
-            (
-                "preprocessor",
-                preprocessor
-            ),
-            (
-                "classifier",
-                RandomForestClassifier(
-                    n_estimators=150,
-                    class_weight="balanced",
-                    random_state=42,
-                    n_jobs=-1
-                )
-            )
-        ]
-    )
+  df["claim_to_limit_ratio"] = (
+      df["claim_amount"] / df["policy_coverage_limit"]
+  ).round(4)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y
-    )
+  feature_cols = [
+      "age",
+      "policy_tenure_months",
+      "annual_premium",
+      "pre_existing_conditions",
+      "treatment_type",
+      "hospital_network",
+      "claim_amount",
+      "policy_coverage_limit",
+      "prior_claims_count",
+      "claim_to_limit_ratio",
+  ]
 
-    model.fit(X_train, y_train)
+  X = df[feature_cols]
+  y = df["claim_approved"]
 
-    test_probability = model.predict_proba(
-        X_test
-    )[:, 1]
+  X_train, X_test, y_train, y_test = train_test_split(
+      X, y, test_size=0.20, stratify=y, random_state=42
+  )
 
-    try:
-        auc = roc_auc_score(
-            y_test,
-            test_probability
-        )
-    except:
-        auc = 0.0
+  numerical_features = [
+      "age",
+      "policy_tenure_months",
+      "annual_premium",
+      "claim_amount",
+      "policy_coverage_limit",
+      "prior_claims_count",
+      "claim_to_limit_ratio",
+  ]
+  categorical_features = [
+      "treatment_type",
+      "hospital_network",
+      "pre_existing_conditions",
+  ]
 
-    return model, auc
+  preprocessor = ColumnTransformer(
+      transformers=[
+          ("num", StandardScaler(), numerical_features),
+          (
+              "cat",
+              OneHotEncoder(handle_unknown="ignore"),
+              categorical_features,
+          ),
+      ]
+  )
+
+  model_pipeline = Pipeline(
+      steps=[
+          ("preprocessor", preprocessor),
+          (
+              "classifier",
+              RandomForestClassifier(
+                  n_estimators=150,
+                  max_depth=10,
+                  class_weight="balanced",
+                  random_state=42,
+              ),
+          ),
+      ]
+  )
+
+  model_pipeline.fit(X_train, y_train)
+
+  y_pred = model_pipeline.predict(X_test)
+  y_proba = model_pipeline.predict_proba(X_test)[:, 1]
+  roc_score = roc_auc_score(y_test, y_proba)
+
+  return df, model_pipeline, roc_score, y_test, y_pred
 
 
-health_model, health_auc = train_health_model(
-    X_health,
-    y_health
+with st.spinner("Compiling enterprise underwriting model..."):
+  df, model_pipeline, roc_score, y_test, y_pred = load_and_train_model()
+
+# -------------------------------------------------------------
+# 2. SIDEBAR CONTROLS
+# -------------------------------------------------------------
+st.sidebar.header("📋 Claim & Policy Parameters")
+
+in_age = st.sidebar.slider("Patient Age", 18, 85, 34)
+in_tenure = st.sidebar.slider("Policy Tenure (Months)", 1, 120, 36)
+in_premium = st.sidebar.number_input("Annual Premium ($)", 300.0, 3500.0, 1200.0)
+in_pre_existing = st.sidebar.selectbox(
+    "Pre-existing Conditions?",
+    [0, 1],
+    format_func=lambda x: "Yes" if x == 1 else "No",
 )
+in_treatment = st.sidebar.selectbox(
+    "Treatment Type",
+    [
+        "Outpatient",
+        "Inpatient",
+        "Dental",
+        "Emergency",
+        "Elective Surgery",
+    ],
+)
+in_network = st.sidebar.selectbox(
+    "Hospital Network", ["In-Network", "Out-Network"]
+)
+in_claim = st.sidebar.number_input(
+    "Claim Amount ($)", 200.0, 50000.0, 3200.0
+)
+in_limit = st.sidebar.selectbox(
+    "Policy Coverage Limit ($)", [5000, 10000, 20000, 50000], index=1
+)
+in_prior_claims = st.sidebar.slider("Prior Claims Count", 0, 10, 1)
+
+single_claim = pd.DataFrame([{
+    "age": in_age,
+    "policy_tenure_months": in_tenure,
+    "annual_premium": in_premium,
+    "pre_existing_conditions": in_pre_existing,
+    "treatment_type": in_treatment,
+    "hospital_network": in_network,
+    "claim_amount": in_claim,
+    "policy_coverage_limit": in_limit,
+    "prior_claims_count": in_prior_claims,
+    "claim_to_limit_ratio": round(in_claim / in_limit, 4),
+}])
 
 
-# =========================================================
-# CREATE CLAIM DATASET USING NUMPY + PANDAS
-# =========================================================
+# -------------------------------------------------------------
+# 3. HELPER FUNCTION FOR REASON CODES
+# -------------------------------------------------------------
+def adjudicate_claim(row, prediction):
+  if prediction == 1:
+    return "PA_100", "Approved: Claim meets coverage terms"
 
-@st.cache_data
-def create_claim_dataset(n=5000):
-
-    np.random.seed(42)
-
-    df = pd.DataFrame({
-
-        "policy_tenure_months":
-            np.random.randint(
-                3,
-                121,
-                n
-            ),
-
-        "annual_premium":
-            np.random.randint(
-                10000,
-                100001,
-                n
-            ),
-
-        "pre_existing_conditions":
-            np.random.randint(
-                0,
-                4,
-                n
-            ),
-
-        "treatment_type":
-            np.random.choice(
-                [
-                    "General",
-                    "Emergency",
-                    "Surgery",
-                    "Chronic",
-                    "Maternity"
-                ],
-                n
-            ),
-
-        "hospital_network":
-            np.random.choice(
-                [
-                    "Network",
-                    "Out-of-Network"
-                ],
-                n,
-                p=[0.75, 0.25]
-            ),
-
-        "claim_amount":
-            np.random.randint(
-                5000,
-                5000001,
-                n
-            ),
-
-        "policy_coverage_limit":
-            np.random.randint(
-                100000,
-                10000001,
-                n
-            ),
-
-        "prior_claims_count":
-            np.random.randint(
-                0,
-                7,
-                n
-            )
-    })
-
-    df["claim_to_limit_ratio"] = (
-        df["claim_amount"]
-        /
-        df["policy_coverage_limit"]
-    )
-
-    score = np.zeros(n)
-
-    score += np.where(
-        df["claim_to_limit_ratio"] <= 0.30,
-        1.2,
-        np.where(
-            df["claim_to_limit_ratio"] <= 0.60,
-            0.5,
-            np.where(
-                df["claim_to_limit_ratio"] <= 1.00,
-                -0.2,
-                -1.2
-            )
-        )
-    )
-
-    score += np.where(
-        df["policy_tenure_months"] >= 60,
-        0.8,
-        np.where(
-            df["policy_tenure_months"] >= 24,
-            0.3,
-            -0.5
-        )
-    )
-
-    score += np.where(
-        df["pre_existing_conditions"] == 0,
-        0.5,
-        np.where(
-            df["pre_existing_conditions"] == 1,
-            0.1,
-            -0.5
-        )
-    )
-
-    score += np.select(
-        [
-            df["treatment_type"] == "Emergency",
-            df["treatment_type"] == "General",
-            df["treatment_type"] == "Chronic",
-            df["treatment_type"] == "Maternity",
-            df["treatment_type"] == "Surgery"
-        ],
-        [
-            0.7,
-            0.4,
-            -0.1,
-            0.2,
-            -0.3
-        ],
-        default=0
-    )
-
-    score += np.where(
-        df["hospital_network"] == "Network",
-        0.6,
-        -0.5
-    )
-
-    score += np.where(
-        df["prior_claims_count"] == 0,
-        0.5,
-        np.where(
-            df["prior_claims_count"] <= 2,
-            0.1,
-            -0.6
-        )
-    )
-
-    score += np.random.normal(
-        0,
-        0.7,
-        n
-    )
-
-    probability = 1 / (
-        1 + np.exp(-score)
-    )
-
-    df["claim_approved"] = (
-        np.random.random(n) < probability
-    ).astype(int)
-
-    return df
-
-
-claim_df = create_claim_dataset()
-
-
-# =========================================================
-# SHOW GENERATED CLAIM DATA
-# =========================================================
-
-with st.expander("View Generated Claim Dataset"):
-
-    st.write(
-        "This is the synthetic dataset generated using NumPy and Pandas."
-    )
-
-    st.dataframe(
-        claim_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-# =========================================================
-# TRAIN CLAIM MODEL
-# =========================================================
-
-@st.cache_resource
-def train_claim_model(claim_df):
-
-    X_claim = claim_df.drop(
-        columns=["claim_approved"]
-    )
-
-    y_claim = claim_df["claim_approved"]
-
-    numeric_features = X_claim.select_dtypes(
-        include=[
-            "int64",
-            "float64",
-            "int32",
-            "float32"
-        ]
-    ).columns.tolist()
-
-    categorical_features = X_claim.select_dtypes(
-        include=[
-            "object",
-            "category",
-            "bool"
-        ]
-    ).columns.tolist()
-
-    try:
-        encoder = OneHotEncoder(
-            handle_unknown="ignore",
-            sparse_output=False
-        )
-    except TypeError:
-        encoder = OneHotEncoder(
-            handle_unknown="ignore",
-            sparse=False
-        )
-
-    preprocessor = ColumnTransformer(
-        transformers=[
-            (
-                "numeric",
-                StandardScaler(),
-                numeric_features
-            ),
-            (
-                "categorical",
-                encoder,
-                categorical_features
-            )
-        ]
-    )
-
-    model = Pipeline(
-        steps=[
-            (
-                "preprocessor",
-                preprocessor
-            ),
-            (
-                "classifier",
-                RandomForestClassifier(
-                    n_estimators=100,
-                    class_weight="balanced",
-                    random_state=42,
-                    n_jobs=-1
-                )
-            )
-        ]
-    )
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_claim,
-        y_claim,
-        test_size=0.2,
-        random_state=42,
-        stratify=y_claim
-    )
-
-    model.fit(
-        X_train,
-        y_train
-    )
-
-    test_probability = model.predict_proba(
-        X_test
-    )[:, 1]
-
-    try:
-        auc = roc_auc_score(
-            y_test,
-            test_probability
-        )
-    except:
-        auc = 0.0
-
+  if row["age"] > 70:
     return (
-        model,
-        X_claim.columns.tolist(),
-        auc
+        "D5_AGE",
+        "Denied: Age exceeds maximum underwriting demographic limit (>70 yrs)",
     )
-
-
-claim_model, claim_columns, claim_auc = train_claim_model(
-    claim_df
-)
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
-
-st.sidebar.title("Claim Assessment")
-
-
-# =========================================================
-# INPUT FORM
-# =========================================================
-
-with st.sidebar.form("claim_assessment_form"):
-
-    st.markdown("### Health Information")
-
-    input_data = {}
-
-    for col in X_health.columns:
-
-        label = col.replace(
-            "_",
-            " "
-        ).title()
-
-        # -------------------------------------------------
-        # AGE
-        # -------------------------------------------------
-
-        if col.strip().lower() == "age":
-
-            min_age = int(
-                X_health[col].min()
-            )
-
-            max_age = int(
-                X_health[col].max()
-            )
-
-            default_age = int(
-                round(
-                    X_health[col].mean()
-                )
-            )
-
-            input_data[col] = st.slider(
-                "Age",
-                min_value=min_age,
-                max_value=max_age,
-                value=default_age,
-                step=1,
-                format="%d"
-            )
-
-        # -------------------------------------------------
-        # OTHER NUMERIC FEATURES
-        # -------------------------------------------------
-
-        elif col in X_health.select_dtypes(
-            include=[
-                "int64",
-                "float64",
-                "int32",
-                "float32"
-            ]
-        ).columns:
-
-            min_value = float(
-                X_health[col].min()
-            )
-
-            max_value = float(
-                X_health[col].max()
-            )
-
-            default_value = float(
-                X_health[col].mean()
-            )
-
-            if min_value == max_value:
-
-                input_data[col] = min_value
-
-            else:
-
-                input_data[col] = st.slider(
-                    label,
-                    min_value=min_value,
-                    max_value=max_value,
-                    value=default_value,
-                    step=0.1
-                )
-
-        # -------------------------------------------------
-        # CATEGORICAL FEATURES
-        # -------------------------------------------------
-
-        else:
-
-            options = (
-                X_health[col]
-                .dropna()
-                .unique()
-                .tolist()
-            )
-
-            input_data[col] = st.selectbox(
-                label,
-                options
-            )
-
-
-    # =====================================================
-    # INSURANCE INFORMATION
-    # =====================================================
-
-    st.markdown("### Insurance Information")
-
-    policy_tenure = st.number_input(
-        "Policy Tenure (Months)",
-        min_value=3,
-        max_value=120,
-        value=36,
-        step=1
+  if row["claim_amount"] > row["policy_coverage_limit"]:
+    return "D1_EXP", "Denied: Exceeds maximum policy limit"
+  if row["policy_tenure_months"] < 6 and row["pre_existing_conditions"] == 1:
+    return (
+        "D2_PRX",
+        "Denied: Pre-existing condition restriction (<6 months tenure)",
     )
-
-    annual_premium = st.number_input(
-        "Annual Premium",
-        min_value=10000,
-        max_value=1000000,
-        value=30000,
-        step=1000
+  if (
+      row["hospital_network"] == "Out-Network"
+      and row["treatment_type"] == "Elective Surgery"
+  ):
+    return (
+        "D3_OON",
+        "Denied: Non-emergency elective service at out-of-network facility",
     )
-
-    pre_existing = st.number_input(
-        "Pre-existing Conditions",
-        min_value=0,
-        max_value=10,
-        value=0,
-        step=1
-    )
-
-    treatment = st.selectbox(
-        "Treatment Type",
-        [
-            "General",
-            "Emergency",
-            "Surgery",
-            "Chronic",
-            "Maternity"
-        ]
-    )
-
-    hospital = st.selectbox(
-        "Hospital Network",
-        [
-            "Network",
-            "Out-of-Network"
-        ]
-    )
-
-    claim_amount = st.number_input(
-        "Claim Amount",
-        min_value=1000,
-        max_value=50000000,
-        value=100000,
-        step=5000,
-        format="%d"
-    )
-
-    coverage_limit = st.number_input(
-        "Policy Coverage Limit",
-        min_value=10000,
-        max_value=100000000,
-        value=500000,
-        step=10000,
-        format="%d"
-    )
-
-    prior_claims = st.number_input(
-        "Previous Claims",
-        min_value=0,
-        max_value=50,
-        value=0,
-        step=1
-    )
-
-    assess = st.form_submit_button(
-        "ASSESS CLAIM",
-        use_container_width=True
-    )
-
-
-# =========================================================
-# CLAIM RATIO
-# =========================================================
-
-claim_ratio = (
-    float(claim_amount)
-    /
-    float(coverage_limit)
-)
-
-
-# =========================================================
-# MAIN PAGE
-# =========================================================
-
-st.title("Claim Assessment")
-
-st.write(
-    "Health risk and insurance claim assessment"
-)
-
-
-# =========================================================
-# ASSESSMENT
-# =========================================================
-
-if assess:
-
-    try:
-
-        # =================================================
-        # HEALTH PREDICTION
-        # =================================================
-
-        health_input_df = pd.DataFrame(
-            [input_data]
-        )
-
-        health_input_df = health_input_df[
-            X_health.columns
-        ]
-
-        health_probability = (
-            health_model.predict_proba(
-                health_input_df
-            )[0]
-        )
-
-        health_risk_probability = float(
-            health_probability[1]
-        )
-
-        high_health_risk = (
-            health_risk_probability >= 0.50
-        )
-
-        low_health_risk = (
-            not high_health_risk
-        )
-
-
-        # =================================================
-        # CLAIM MODEL INPUT
-        # =================================================
-
-        claim_input = pd.DataFrame({
-
-            "policy_tenure_months":
-                [int(policy_tenure)],
-
-            "annual_premium":
-                [float(annual_premium)],
-
-            "pre_existing_conditions":
-                [int(pre_existing)],
-
-            "treatment_type":
-                [treatment],
-
-            "hospital_network":
-                [hospital],
-
-            "claim_amount":
-                [float(claim_amount)],
-
-            "policy_coverage_limit":
-                [float(coverage_limit)],
-
-            "prior_claims_count":
-                [int(prior_claims)],
-
-            "claim_to_limit_ratio":
-                [float(claim_ratio)]
-        })
-
-        claim_input = claim_input[
-            claim_columns
-        ]
-
-
-        # =================================================
-        # CLAIM MODEL PREDICTION
-        # =================================================
-
-        claim_probability = (
-            claim_model.predict_proba(
-                claim_input
-            )[0]
-        )
-
-        claim_approval_probability = float(
-            claim_probability[1]
-        )
-
-
-        # =================================================
-        # COVERAGE RULE
-        # =================================================
-
-        if claim_ratio > 1:
-
-            claim_approved = False
-
-        else:
-
-            claim_approved = True
-
-
-        # =================================================
-        # FINAL DECISION
-        # =================================================
-
-        final_approved = (
-            low_health_risk
-            and
-            claim_approved
-        )
-
-
-        # =================================================
-        # RESULTS
-        # =================================================
-
-        st.markdown("---")
-
-        st.header("Assessment Result")
-
-        col1, col2, col3 = st.columns(3)
-
-
-        # =================================================
-        # HEALTH
-        # =================================================
-
-        with col1:
-
-            st.subheader("Health Risk")
-
-            st.metric(
-                "Risk Probability",
-                f"{health_risk_probability * 100:.2f}%"
-            )
-
-            if high_health_risk:
-
-                st.error(
-                    "HIGH HEALTH RISK"
-                )
-
-            else:
-
-                st.success(
-                    "LOW HEALTH RISK"
-                )
-
-
-        # =================================================
-        # CLAIM
-        # =================================================
-
-        with col2:
-
-            st.subheader("Claim Assessment")
-
-            st.metric(
-                "Claim / Coverage",
-                f"{claim_ratio * 100:.2f}%"
-            )
-
-            if claim_ratio > 1:
-
-                st.error(
-                    "NOT APPROVED"
-                )
-
-                st.write(
-                    "Claim amount exceeds policy coverage."
-                )
-
-            else:
-
-                st.success(
-                    "APPROVED"
-                )
-
-                st.write(
-                    "Claim amount is within policy coverage."
-                )
-
-
-        # =================================================
-        # FINAL
-        # =================================================
-
-        with col3:
-
-            st.subheader("Final Decision")
-
-            if final_approved:
-
-                st.success(
-                    "CLAIM APPROVED"
-                )
-
-                st.write(
-                    "Both criteria passed."
-                )
-
-            else:
-
-                st.error(
-                    "CLAIM NOT APPROVED"
-                )
-
-                if not low_health_risk:
-
-                    st.write(
-                        "Health-risk criterion failed."
-                    )
-
-                if claim_ratio > 1:
-
-                    st.write(
-                        "Claim exceeds coverage limit."
-                    )
-
-
-        # =================================================
-        # CLAIM DETAILS
-        # =================================================
-
-        st.markdown("---")
-
-        st.subheader("Claim Details")
-
-        d1, d2, d3 = st.columns(3)
-
-        with d1:
-
-            st.metric(
-                "Claim Amount",
-                f"₹{claim_amount:,.0f}"
-            )
-
-        with d2:
-
-            st.metric(
-                "Coverage Limit",
-                f"₹{coverage_limit:,.0f}"
-            )
-
-        with d3:
-
-            st.metric(
-                "Claim / Coverage Ratio",
-                f"{claim_ratio:.2f}"
-            )
-
-
-        # =================================================
-        # DECISION BREAKDOWN
-        # =================================================
-
-        st.markdown("---")
-
-        st.subheader("Decision Breakdown")
-
-        result_table = pd.DataFrame({
-
-            "Criterion": [
-                "Health Risk",
-                "Claim vs Coverage",
-                "Final Decision"
-            ],
-
-            "Result": [
-
-                "PASS"
-                if low_health_risk
-                else "FAIL",
-
-                "APPROVED"
-                if claim_ratio <= 1
-                else "NOT APPROVED",
-
-                "APPROVED"
-                if final_approved
-                else "NOT APPROVED"
-            ]
-        })
-
-        st.dataframe(
-            result_table,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-    except Exception as e:
-
-        st.error(
-            "Something went wrong while processing the claim."
-        )
-
-        st.exception(e)
-
-
-else:
-
-    st.info(
-        "Enter the details and click "
-        "**ASSESS CLAIM** to process the claim."
-    )
-
-
-# =========================================================
-# MODEL INFORMATION
-# =========================================================
-
-with st.expander("Model Information"):
-
-    st.write("### Health Risk Model")
-
-    st.write(
-        "Random Forest trained on the original "
-        "stroke_prediction.csv dataset."
-    )
-
-    st.write(
-        f"Health Model ROC-AUC: {health_auc:.3f}"
-    )
-
-    st.write(
-        "Age handling is preserved from the original model."
-    )
-
-    st.write("### Claim Model")
-
-    st.write(
-        "Random Forest using policy, treatment, "
-        "hospital, claim and coverage information."
-    )
-
-    st.write(
-        f"Claim Model ROC-AUC: {claim_auc:.3f}"
-    )
-
-    st.write("### Final Rule")
-
-    st.code(
-        """
-Claim / Coverage > 1
-    NOT APPROVED
-
-Claim / Coverage <= 1
-    APPROVED
-
-Final Approval =
-Low Health Risk AND Claim/Coverage <= 1
-"""
-    )
-
-
-# =========================================================
-# FOOTER
-# =========================================================
+  return "D4_GEN", "Denied: High risk profile / Policy exclusions"
+
+
+# -------------------------------------------------------------
+# 4. DASHBOARD METRICS & INFERENCE OUTPUT
+# -------------------------------------------------------------
+c1, c2, c3 = st.columns(3)
+with c1:
+  st.metric(
+      label="MODEL ROC-AUC",
+      value=f"{roc_score:.4f}",
+      delta="Validated Pipeline",
+  )
+with c2:
+  st.metric(
+      label="DATASET SCALE",
+      value=f"{len(df):,} Records",
+      delta="Training Corpus",
+  )
+with c3:
+  st.metric(label="ENGINE STATUS", value="Operational", delta="Low Latency")
 
 st.markdown("---")
+st.markdown("### **Underwriting Decision & Risk Analysis**")
 
-st.caption(
-    "Claim Assessment Prototype"
-)
+if st.sidebar.button("Run Adjudication Review", type="primary"):
+  prediction = model_pipeline.predict(single_claim)[0]
+  prediction_proba = model_pipeline.predict_proba(single_claim)[0][1]
+  code, reason = adjudicate_claim(single_claim.iloc[0], prediction)
+
+  if prediction == 1:
+    st.success(
+        f"**STATUS: AUTO-APPROVED (Code: {code})**\n\n**Reason:** {reason}\n\n"
+        f"Payout authorized. (Approval Confidence: {prediction_proba * 100:.1f}%)"
+    )
+  else:
+    st.error(
+        f"**STATUS: FLAGGED FOR AUDIT / DENIED (Code: {code})**\n\n**Reason:**"
+        f" {reason}\n\nImmediate review routed to supervisor. (Denial Risk"
+        f" Score: {(1 - prediction_proba) * 100:.1f}%)"
+    )
+else:
+  st.info(
+      "👈 Adjust claim parameters in the left sidebar and click **Run"
+      " Adjudication Review** to evaluate a submission."
+  )
+
+st.markdown("---")
+with st.expander("🔍 System Diagnostics & Confusion Matrix"):
+  st.text(str(confusion_matrix(y_test, y_pred)))
+  st.text(
+      classification_report(
+          y_test, y_pred, target_names=["Denied (0)", "Approved (1)"]
+      )
+  )
