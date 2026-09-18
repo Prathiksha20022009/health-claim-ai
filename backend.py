@@ -3,17 +3,15 @@ from pydantic import BaseModel
 
 app = FastAPI(
     title="ClaimTriage Enterprise Backend",
-    description=(
-        "Decoupled FastAPI backend processing clinical risk and underwriting"
-        " rules."
-    ),
-    version="3.0",
+    description="Clinical Risk & Underwriting Adjudication Engine",
+    version="3.3",
 )
 
 
-class ClinicalAssessmentRequest(BaseModel):
+class AssessmentRequest(BaseModel):
   gender: str
   age: int
+  income: float
   hypertension: int
   heart_disease: int
   avg_glucose_level: float
@@ -24,47 +22,83 @@ class ClinicalAssessmentRequest(BaseModel):
   policy_tenure_months: int
 
 
+def evaluate_scheme_eligibility(
+    age: int, income: float, pre_existing: int, hypertension: int, heart_disease: int
+):
+  eligible_schemes = []
+
+  # Public Safety Net Rules (e.g., Ayushman Bharat PM-JAY threshold guidelines)
+  if income <= 500000 or age >= 70:
+    eligible_schemes.append({
+        "scheme_code": "PUB_PMJAY",
+        "name": "Ayushman Bharat PM-JAY (Public Safety Net)",
+        "coverage": "Cashless Hospitalization Protection",
+        "eligibility_reason": (
+            "Qualified via Senior Citizen Provision (Age >= 70)"
+            if age >= 70
+            else "Qualified via Lower-Income Threshold Criteria"
+        ),
+    })
+
+  if age >= 60:
+    eligible_schemes.append({
+        "scheme_code": "PUB_SENIOR",
+        "name": "Senior Citizen Health Protection Plan",
+        "coverage": "Specialized Geriatric Inpatient Care",
+        "eligibility_reason": f"Matched Age Demographic ({age} years)",
+    })
+
+  if income > 300000:
+    eligible_schemes.append({
+        "scheme_code": "PVT_SHIELD",
+        "name": "Comprehensive Private Health Shield",
+        "coverage": "Customizable Annual Sum Insured",
+        "eligibility_reason": (
+            "Standard Market Eligibility (Subject to Pre-Existing Waiting"
+            " Period)"
+            if (hypertension == 1 or heart_disease == 1 or pre_existing == 1)
+            else "Standard Market Eligibility (Clean Profile)"
+        ),
+    })
+
+  return eligible_schemes
+
+
 @app.post("/api/adjudicate")
-def adjudicate_claim_endpoint(data: ClinicalAssessmentRequest):
+def adjudicate_claim_endpoint(data: AssessmentRequest):
   risk_points = 0
   risk_reasons = []
 
-  # 1. Age & Gender Risk Weighting
+  # 1. Age & Demographic Risk Weighting (Strict Geriatric Thresholds Added)
   gender_lower = data.gender.strip().lower()
-  if data.age >= 65:
+  if data.age >= 80:
+    risk_points += 5
+    risk_reasons.append(
+        f"Advanced geriatric age demographic ({data.age} years - Mandatory"
+        " audit threshold)"
+    )
+  elif data.age >= 65:
     risk_points += 3
     risk_reasons.append(
-        f"Advanced senior age demographic ({data.age} years - High baseline"
-        " vulnerability)"
+        f"Advanced senior age demographic ({data.age} years - Elevated baseline)"
     )
   elif data.age >= 50:
     risk_points += 2
     risk_reasons.append(f"Elevated age bracket ({data.age} years)")
-  elif gender_lower == "male" and data.age >= 45:
-    risk_points += 1
-    risk_reasons.append(f"Male demographic risk threshold met ({data.age} years)")
-  elif gender_lower == "female" and data.age >= 55:
-    risk_points += 1
-    risk_reasons.append(
-        f"Post-menopausal female demographic risk threshold met ({data.age}"
-        " years)"
-    )
 
   # 2. BMI Evaluation (WHO Normal: 18.5 - 24.9)
   if data.bmi > 30.0:
     risk_points += 2
-    risk_reasons.append(
-        f"Obesity flagged (BMI: {data.bmi} > 30.0 - High metabolic/cardiac risk)"
-    )
+    risk_reasons.append(f"Obesity indicator flagged (BMI: {data.bmi})")
   elif data.bmi < 18.5:
     risk_points += 1
-    risk_reasons.append(f"Underweight flagged (BMI: {data.bmi} < 18.5)")
+    risk_reasons.append(f"Underweight indicator flagged (BMI: {data.bmi})")
 
   # 3. Glucose Evaluation (Normal: 70 - 99 mg/dL)
   if data.avg_glucose_level >= 126.0:
     risk_points += 3
     risk_reasons.append(
-        f"Elevated Glucose ({data.avg_glucose_level} mg/dL - Diabetes indicator)"
+        f"Elevated Glucose ({data.avg_glucose_level} mg/dL - Hyperglycemia)"
     )
   elif data.avg_glucose_level > 99.0:
     risk_points += 1
@@ -73,27 +107,26 @@ def adjudicate_claim_endpoint(data: ClinicalAssessmentRequest):
     )
 
   # 4. Chronic Conditions
+  has_pre_existing = 0
   if data.hypertension == 1:
     risk_points += 2
-    risk_reasons.append("Diagnosed Hypertension (High Blood Pressure)")
+    risk_reasons.append("Diagnosed Hypertension Profile")
+    has_pre_existing = 1
   if data.heart_disease == 1:
     risk_points += 4
-    risk_reasons.append("Prior History of Cardiovascular Disease")
+    risk_reasons.append("Cardiovascular Disease History")
+    has_pre_existing = 1
 
-  # 5. Smoking History (Differentiating Active vs. Former)
+  # 5. Smoking Behavior
   smoking_lower = data.smoking_history.strip().lower()
   if smoking_lower == "smokes":
     risk_points += 2
-    risk_reasons.append(
-        "Active smoker profile (Elevated respiratory/cardiac risk)"
-    )
+    risk_reasons.append("Active Smoker Risk Profile")
   elif smoking_lower == "former":
     risk_points += 1
-    risk_reasons.append(
-        "Former smoker profile (Moderate historical risk adjustment)"
-    )
+    risk_reasons.append("Former Smoker Risk Adjustment")
 
-  # Holistic Tier Classification
+  # Holistic Risk Tier Assignment
   is_high_risk = risk_points >= 5
   risk_tier = (
       "HIGH RISK"
@@ -101,9 +134,10 @@ def adjudicate_claim_endpoint(data: ClinicalAssessmentRequest):
       else ("MODERATE RISK" if risk_points >= 2 else "LOW RISK")
   )
 
-  # Financial Policy Rules
+  # Financial & Policy Rule Verification
   is_excess = data.claim_amount > data.coverage_limit
-  is_early = data.policy_tenure_months < 6
+  is_ped_waiting_breach = data.policy_tenure_months < 24 and has_pre_existing == 1
+  is_initial_wait_breach = data.policy_tenure_months < 1
 
   # Probability Calculation
   approval_prob = 0.90
@@ -112,27 +146,53 @@ def adjudicate_claim_endpoint(data: ClinicalAssessmentRequest):
   elif risk_tier == "MODERATE RISK":
     approval_prob -= 0.25
 
-  if is_excess or is_early:
+  if is_excess or is_ped_waiting_breach or is_initial_wait_breach:
     approval_prob = 0.0
 
   final_prob_str = f"{max(0.0, approval_prob) * 100:.1f}%"
 
-  if approval_prob < 0.5 or is_excess or is_early:
-    reason = (
-        "Claim amount exceeds coverage limit."
-        if is_excess
-        else (
-            "Policy tenure under 6-month waiting period."
-            if is_early
-            else "High clinical risk profile breached underwriting thresholds."
-        )
+  # Decision Code Matrix
+  if is_excess:
+    decision, code, reason = (
+        "FLAGGED FOR AUDIT / DENIED",
+        "D1_LIMIT_EXCEEDED",
+        "Requested claim amount exceeds active policy coverage limit.",
     )
-    decision = "FLAGGED FOR AUDIT / DENIED"
-    code = "D_AUDIT"
+  elif is_ped_waiting_breach:
+    decision, code, reason = (
+        "FLAGGED FOR AUDIT / DENIED",
+        "D2_WAITING_PERIOD",
+        (
+            "Pre-existing chronic condition disclosed within mandatory 24-month"
+            " waiting window."
+        ),
+    )
+  elif approval_prob < 0.5:
+    decision, code, reason = (
+        "FLAGGED FOR AUDIT / DENIED",
+        "D3_RISK_THRESHOLD",
+        (
+            "Cumulative clinical risk score breached commercial underwriting"
+            " limits."
+        ),
+    )
   else:
-    reason = "Claim verified against medical baselines and policy terms."
-    decision = "AUTO-APPROVED"
-    code = "PA_100"
+    decision, code, reason = (
+        "AUTO-APPROVED",
+        "PA_VERIFIED_100",
+        (
+            "Claim successfully verified against medical baselines and policy"
+            " terms."
+        ),
+    )
+
+  matched_schemes = evaluate_scheme_eligibility(
+      age=data.age,
+      income=data.income,
+      pre_existing=has_pre_existing,
+      hypertension=data.hypertension,
+      heart_disease=data.heart_disease,
+  )
 
   return {
       "decision": decision,
@@ -144,4 +204,5 @@ def adjudicate_claim_endpoint(data: ClinicalAssessmentRequest):
           "total_risk_score": risk_points,
           "clinical_flags": risk_reasons,
       },
+      "eligible_schemes": matched_schemes,
   }
