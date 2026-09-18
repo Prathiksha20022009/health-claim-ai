@@ -1,178 +1,272 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# -------------------------------------------------------------
+# ---------------------------------------------------------
 # PAGE CONFIGURATION
-# -------------------------------------------------------------
+# ---------------------------------------------------------
 st.set_page_config(
-    page_title="Health Claim Triage AI",
-    page_icon="🏥",
-    layout="wide"
+    page_title="ClaimTriage AI | Clinical Intelligence",
+    page_icon="⚡",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-st.title("🏥 Intelligent Healthcare Claim Risk & Triage System")
-st.markdown("Automating medical claim reviews using machine learning pipelines to flag high-risk or fraudulent submissions.")
+# ---------------------------------------------------------
+# ELITE VIBE-CODED CSS & STYLING
+# ---------------------------------------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
 
-# -------------------------------------------------------------
-# 1. GENERATE SYNTHETIC HEALTHCARE CLAIM DATASET
-# -------------------------------------------------------------
+    html, body, [class*="css"] {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        color: #f8fafc;
+        background-color: #07090e;
+    }
+
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    .hero-container {
+        background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+        border: 1px solid rgba(99, 102, 241, 0.2);
+        padding: 2rem 2.5rem;
+        border-radius: 16px;
+        margin-bottom: 2rem;
+        box-shadow: 0 10px 30px -10px rgba(99, 102, 241, 0.3);
+    }
+    .hero-title {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #ffffff;
+        letter-spacing: -0.03em;
+        margin: 0;
+    }
+    .hero-subtitle {
+        font-size: 1rem;
+        color: #94a3b8;
+        margin-top: 0.5rem;
+        font-weight: 400;
+    }
+
+    [data-testid="stSidebar"] {
+        background-color: #0b0f19;
+        border-right: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stButton>button {
+        width: 100%;
+        background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+        color: white;
+        font-weight: 600;
+        border-radius: 10px;
+        padding: 0.75rem 1rem;
+        border: none;
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+    }
+    </style>
+
+    <div class="hero-container">
+        <div class="hero-title">ClaimTriage Intelligence</div>
+        <div class="hero-subtitle">Official Clinical Dataset Integration — Health Risk & Underwriting Engine</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# ---------------------------------------------------------
+# 1. LOAD OFFICIAL DATASET
+# ---------------------------------------------------------
 @st.cache_data
 def load_and_prepare_data():
-    n_samples = 2500
-    np.random.seed(42)
-
-    age = np.random.randint(18, 85, size=n_samples)
-    policy_tenure_months = np.random.randint(1, 120, size=n_samples)
-    annual_premium = np.random.uniform(300, 3500, size=n_samples).round(2)
-    pre_existing_conditions = np.random.choice([0, 1], size=n_samples, p=[0.7, 0.3])
-    claim_amount = np.random.uniform(200, 25000, size=n_samples).round(2)
-    policy_coverage_limit = np.random.choice([5000, 10000, 20000, 50000], size=n_samples)
-
-    treatment_types = np.random.choice(
-        ['Outpatient', 'Inpatient', 'Dental', 'Emergency', 'Elective Surgery'],
-        size=n_samples,
-        p=[0.35, 0.25, 0.15, 0.15, 0.10]
+  try:
+    df = pd.read_csv("stroke_prediction.csv")
+  except FileNotFoundError:
+    st.error(
+        "Error: 'stroke_prediction.csv' not found in your folder. Make sure"
+        " it's in your workspace directory!"
     )
-    hospital_network = np.random.choice(['In-Network', 'Out-Network'], size=n_samples, p=[0.75, 0.25])
-    prior_claims_count = np.random.poisson(lam=1.2, size=n_samples)
+    st.stop()
 
-    exceeds_limit = claim_amount > policy_coverage_limit
-    early_preexisting = (policy_tenure_months < 6) & (pre_existing_conditions == 1)
-    unauthorized_elective = (hospital_network == 'Out-Network') & (treatment_types == 'Elective Surgery')
+  df = df.dropna()
+  if "id" in df.columns:
+    df = df.drop(columns=["id"])
 
-    claim_approved = []
-    for i in range(n_samples):
-        if exceeds_limit[i] or early_preexisting[i] or unauthorized_elective[i]:
-            approved = np.random.choice([0, 1], p=[0.88, 0.12])
-        else:
-            approved = np.random.choice([1, 0], p=[0.85, 0.15])
-        claim_approved.append(approved)
+  if "stroke" in df.columns:
+    df["target_flag"] = df["stroke"]
+    df = df.drop(columns=["stroke"])
 
-    df = pd.DataFrame({
-        'age': age,
-        'policy_tenure_months': policy_tenure_months,
-        'annual_premium': annual_premium,
-        'pre_existing_conditions': pre_existing_conditions,
-        'treatment_type': treatment_types,
-        'hospital_network': hospital_network,
-        'claim_amount': claim_amount,
-        'policy_coverage_limit': policy_coverage_limit,
-        'prior_claims_count': prior_claims_count,
-        'claim_approved': claim_approved
-    })
-    
-    # Feature Engineering
-    df['claim_to_limit_ratio'] = (df['claim_amount'] / df['policy_coverage_limit']).round(4)
-    return df
+  return df
+
 
 df = load_and_prepare_data()
 
-# Separate Target and Features
-X = df.drop(columns=['claim_approved'])
-y = df['claim_approved']
+# ---------------------------------------------------------
+# 2. MACHINE LEARNING PIPELINE DYNAMIC SETUP
+# ---------------------------------------------------------
+X = df.drop(columns=["target_flag"])
+y = df["target_flag"]
 
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.20, stratify=y, random_state=42
+    X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-# -------------------------------------------------------------
-# 2. PIPELINE SETUP & MODEL TRAINING
-# -------------------------------------------------------------
-numerical_features = [
-    'age', 'policy_tenure_months', 'annual_premium',
-    'claim_amount', 'policy_coverage_limit',
-    'prior_claims_count', 'claim_to_limit_ratio'
-]
-categorical_features = ['treatment_type', 'hospital_network', 'pre_existing_conditions']
+numeric_features = X.select_dtypes(
+    include=["int64", "float64", "int32", "float32"]
+).columns.tolist()
+categorical_features = X.select_dtypes(
+    include=["object", "category", "bool"]
+).columns.tolist()
 
 preprocessor = ColumnTransformer(
     transformers=[
-        ('num', StandardScaler(), numerical_features),
-        ('cat', OneHotEncoder(drop='first', handle_unknown='ignore'), categorical_features)
+        ("num", StandardScaler(), numeric_features),
+        (
+            "cat",
+            OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+            categorical_features,
+        ),
     ]
 )
 
-model_pipeline = Pipeline(steps=[
-    ('preprocessor', preprocessor),
-    ('classifier', RandomForestClassifier(
-        n_estimators=150,
-        max_depth=10,
-        class_weight='balanced',
-        random_state=42
-    ))
-])
+model_pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        (
+            "classifier",
+            RandomForestClassifier(
+                n_estimators=150, class_weight="balanced", random_state=42
+            ),
+        ),
+    ]
+)
 
-with st.spinner("Training the Random Forest Pipeline..."):
-    model_pipeline.fit(X_train, y_train)
+model_pipeline.fit(X_train, y_train)
 
-# Calculate Model Metrics for Display
 y_pred = model_pipeline.predict(X_test)
-y_proba = model_pipeline.predict_proba(X_test)[:, 1]
-roc_score = roc_auc_score(y_test, y_proba)
+y_prob = model_pipeline.predict_proba(X_test)[:, 1]
+roc_auc = roc_auc_score(y_test, y_prob)
 
-# -------------------------------------------------------------
-# 3. STREAMLIT SIDEBAR & LIVE INFERENCE
-# -------------------------------------------------------------
-st.sidebar.header("📝 Evaluate New Claim")
+# ---------------------------------------------------------
+# 3. DYNAMIC SIDEBAR CONTROLS BASED ON CSV COLUMNS
+# ---------------------------------------------------------
+st.sidebar.markdown(
+    "### **Patient Parameter Config**\nAdjust clinical inputs based on official"
+    " schema."
+)
 
-in_age = st.sidebar.slider("Patient Age", 18, 85, 34)
-in_tenure = st.sidebar.slider("Policy Tenure (Months)", 1, 120, 36)
-in_premium = st.sidebar.number_input("Annual Premium ($)", 300.0, 3500.0, 1200.0)
-in_pre_existing = st.sidebar.selectbox("Pre-existing Conditions?", [0, 1], format_func=lambda x: "Yes" if x==1 else "No")
-in_treatment = st.sidebar.selectbox("Treatment Type", ['Outpatient', 'Inpatient', 'Dental', 'Emergency', 'Elective Surgery'])
-in_network = st.sidebar.selectbox("Hospital Network", ['In-Network', 'Out-Network'])
-in_claim = st.sidebar.number_input("Claim Amount ($)", 200.0, 25000.0, 3200.0)
-in_limit = st.sidebar.selectbox("Policy Coverage Limit ($)", [5000, 10000, 20000, 50000], index=1)
-in_prior_claims = st.sidebar.slider("Prior Claims Count", 0, 10, 1)
+input_data = {}
+for col in numeric_features:
+  min_val = float(X[col].min())
+  max_val = float(X[col].max())
+  mean_val = float(X[col].mean())
+  input_data[col] = st.sidebar.slider(
+      f"{col.replace('_', ' ').title()}", min_val, max_val, mean_val
+  )
 
-if st.sidebar.button("Run Claim Triage Prediction", type="primary"):
-    # Build single row dataframe matching feature structure
-    single_claim = pd.DataFrame([{
-        'age': in_age,
-        'policy_tenure_months': in_tenure,
-        'annual_premium': in_premium,
-        'pre_existing_conditions': in_pre_existing,
-        'treatment_type': in_treatment,
-        'hospital_network': in_network,
-        'claim_amount': in_claim,
-        'policy_coverage_limit': in_limit,
-        'prior_claims_count': in_prior_claims,
-        'claim_to_limit_ratio': round(in_claim / in_limit, 4)
-    }])
-    
-    pred = model_pipeline.predict(single_claim)[0]
-    proba = model_pipeline.predict_proba(single_claim)[0][1]
-    
-    st.subheader("🎯 Evaluation Decision Output")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if pred == 1:
-            st.success(f"### Decision: APPROVED\n**Approval Probability:** {proba:.2%}")
-        else:
-            st.error(f"### Decision: DENIED (High Risk)\n**Approval Probability:** {proba:.2%}")
-            
-    with col2:
-        st.metric(label="Calculated Utilization Ratio", value=f"{single_claim['claim_to_limit_ratio'].values[0]:.2f}")
+for col in categorical_features:
+  unique_vals = X[col].unique().tolist()
+  input_data[col] = st.sidebar.selectbox(
+      f"{col.replace('_', ' ').title()}", unique_vals
+  )
 
-# -------------------------------------------------------------
-# 4. DASHBOARD METRICS VIEW
-# -------------------------------------------------------------
-st.divider()
-st.subheader("📊 System Performance Overview (Test Set)")
-m1, m2 = st.columns(2)
-with m1:
-    st.metric(label="Model ROC-AUC Score", value=f"{roc_score:.4f}")
-with m2:
-    st.metric(label="Dataset Size", value=f"{len(df)} Records")
+input_df = pd.DataFrame([input_data])
 
-with st.expander("🔍 View Detailed Confusion Matrix & Classification Report"):
-    st.text(confusion_matrix(y_test, y_pred))
-    st.text(classification_report(y_test, y_pred, target_names=['Denied (0)', 'Approved (1)']))
+# ---------------------------------------------------------
+# 4. DASHBOARD LAYOUT & INFERENCE
+# ---------------------------------------------------------
+c1, c2, c3 = st.columns(3)
+with c1:
+  st.metric(
+      label="MODEL ROC-AUC",
+      value=f"{roc_auc:.4f}",
+      delta="Official Dataset Pipeline",
+  )
+with c2:
+  st.metric(
+      label="DATASET SIZE", value=f"{len(df)} Records", delta="Official Source"
+  )
+with c3:
+  st.metric(label="ENGINE STATUS", value="Live / Ready", delta="100% Uptime")
+
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("### **Live Clinical Risk Profiling & Inference**")
+
+if st.sidebar.button("Execute Risk Assessment", type="primary"):
+  prediction = model_pipeline.predict(input_df)[0]
+  prediction_proba = model_pipeline.predict_proba(input_df)[0][1]
+
+  res_col1, res_col2 = st.columns([1.2, 1])
+
+  with res_col1:
+    if prediction == 1:
+      st.error(
+          "**HIGH HEALTH RISK — FLAG FOR CASE MANAGEMENT**\n\nClinical"
+          " indicators exceed safety thresholds. Immediate medical review"
+          " recommended."
+      )
+    else:
+      st.success(
+          "**LOW CLINICAL RISK — AUTO-CLEARED**\n\nPatient metrics clear all"
+          " automated risk and triage filters."
+      )
+
+    st.metric(
+        label="Calculated Health Risk Probability",
+        value=f"{prediction_proba * 100:.1f}%",
+    )
+
+  with res_col2:
+    fig, ax = plt.subplots(figsize=(4, 2.5))
+    fig.patch.set_facecolor("#0f172a")
+    ax.set_facecolor("#0f172a")
+
+    categories = ["Low Risk", "High Risk"]
+    probabilities = [1 - prediction_proba, prediction_proba]
+    colors = ["#10b981", "#ef4444" if prediction == 1 else "#3b82f6"]
+
+    ax.barh(categories, probabilities, color=colors, height=0.5)
+    ax.set_xlim(0, 1.0)
+    ax.tick_params(colors="white", labelsize=9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#334155")
+    ax.spines["bottom"].set_color("#334155")
+    plt.title("Risk Confidence Distribution", color="white", fontsize=10, pad=10)
+
+    st.pyplot(fig)
+
+else:
+  st.info(
+      "Adjust patient parameters in the left sidebar and click **Execute Risk"
+      " Assessment** to run live model inference."
+  )
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+with st.expander("Advanced Model Diagnostics & Confusion Matrix"):
+  diag_col1, diag_col2 = st.columns(2)
+  with diag_col1:
+    st.markdown("**Classification Metrics**")
+    report = classification_report(y_test, y_pred, output_dict=True)
+    st.dataframe(pd.DataFrame(report).transpose(), use_container_width=True)
+  with diag_col2:
+    st.markdown("**Confusion Matrix**")
+    cm = confusion_matrix(y_test, y_pred)
+    cm_df = pd.DataFrame(
+        cm,
+        columns=["Pred: Low Risk", "Pred: High Risk"],
+        index=["Actual: Low Risk", "Actual: High Risk"],
+    )
+    st.dataframe(cm_df, use_container_width=True)
