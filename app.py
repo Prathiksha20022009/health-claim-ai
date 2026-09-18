@@ -1,332 +1,228 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
-from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 # -------------------------------------------------------------
 # PAGE CONFIGURATION & ENTERPRISE STYLING
 # -------------------------------------------------------------
 st.set_page_config(
-    page_title="Claim Triage | Enterprise Underwriting Platform",
+    page_title="Claim Triage | Clinical & Financial Adjudication",
     page_icon="🛡️",
     layout="wide",
 )
 
-st.title("🛡️ Claim Triage: Automated Insurance Adjudication Engine")
+st.title("🛡️ Claim Triage: Holistic Clinical & Financial Adjudication Engine")
 st.markdown(
-    "Enterprise-grade risk profiling and policy validation platform combining"
-    " clinical baselines with financial underwriting rules."
+    "Native enterprise underwriting platform combining WHO clinical health"
+    " baselines with insurance policy rules."
 )
 
 
 # -------------------------------------------------------------
-# 1. CACHED DATA LOADING & MODEL TRAINING
+# 1. CLINICAL RISK EVALUATION FUNCTION (Fixed Smoking Logic)
 # -------------------------------------------------------------
-@st.cache_resource
-def load_and_train_model():
-  np.random.seed(42)
-  n_samples = 2500
+def evaluate_clinical_risk(
+    gender,
+    age,
+    hypertension,
+    heart_disease,
+    avg_glucose_level,
+    smoking_history,
+    bmi,
+):
+  risk_points = 0
+  risk_reasons = []
 
-  age = np.random.randint(18, 85, size=n_samples)
-  policy_tenure_months = np.random.randint(1, 120, size=n_samples)
-  annual_premium = np.random.uniform(300, 3500, size=n_samples).round(2)
-  pre_existing_conditions = np.random.choice([0, 1], size=n_samples, p=[0.7, 0.3])
-  claim_amount = np.random.uniform(200, 25000, size=n_samples).round(2)
-  policy_coverage_limit = np.random.choice(
-      [5000, 10000, 20000, 50000], size=n_samples
+  # A. Age & Gender Baseline Risk Weighting
+  gender_lower = gender.strip().lower()
+
+  if age >= 65:
+    risk_points += 3
+    risk_reasons.append(
+        f"Advanced senior age demographic ({age} years - High baseline"
+        " vulnerability)"
+    )
+  elif age >= 50:
+    risk_points += 2
+    risk_reasons.append(f"Elevated age bracket ({age} years)")
+  elif gender_lower == "male" and age >= 45:
+    risk_points += 1
+    risk_reasons.append(f"Male demographic risk threshold met ({age} years)")
+  elif gender_lower == "female" and age >= 55:
+    risk_points += 1
+    risk_reasons.append(
+        f"Post-menopausal female demographic risk threshold met ({age} years)"
+    )
+
+  # B. BMI Evaluation (WHO Standard: Normal 18.5 - 24.9)
+  if bmi > 30.0:
+    risk_points += 2
+    risk_reasons.append(
+        f"Obesity flagged (BMI: {bmi} > 30.0 - High metabolic/cardiac risk)"
+    )
+  elif bmi < 18.5:
+    risk_points += 1
+    risk_reasons.append(f"Underweight flagged (BMI: {bmi} < 18.5)")
+
+  # C. Glucose Evaluation (Normal: 70 - 99 mg/dL)
+  if avg_glucose_level >= 126.0:
+    risk_points += 3
+    risk_reasons.append(
+        f"Elevated Glucose ({avg_glucose_level} mg/dL - Diabetes indicator)"
+    )
+  elif avg_glucose_level > 99.0:
+    risk_points += 1
+    risk_reasons.append(
+        f"Pre-diabetic glucose range ({avg_glucose_level} mg/dL)"
+    )
+
+  # D. Chronic Conditions & History (Hypertension / Heart Disease)
+  if hypertension == 1:
+    risk_points += 2
+    risk_reasons.append("Diagnosed Hypertension (High Blood Pressure)")
+
+  if heart_disease == 1:
+    risk_points += 4
+    risk_reasons.append("Prior History of Cardiovascular Disease")
+
+  # E. Smoking History (FIXED: Differentiating Active vs. Former)
+  smoking_lower = smoking_history.strip().lower()
+  if smoking_lower == "smokes":
+    risk_points += 2
+    risk_reasons.append(
+        "Active smoker profile (Elevated respiratory/cardiac risk)"
+    )
+  elif smoking_lower == "former":
+    risk_points += (
+        1  # Lower risk point for former smokers compared to active ones
+    )
+    risk_reasons.append(
+        "Former smoker profile (Moderate historical risk adjustment)"
+    )
+  # 'never' adds 0 points
+
+  # Holistic Tier Classification
+  is_high_risk = risk_points >= 5
+  risk_tier = (
+      "HIGH RISK"
+      if is_high_risk
+      else ("MODERATE RISK" if risk_points >= 2 else "LOW RISK")
   )
 
-  treatment_types = np.random.choice(
-      ["Outpatient", "Inpatient", "Dental", "Emergency", "Elective Surgery"],
-      size=n_samples,
-      p=[0.35, 0.25, 0.15, 0.15, 0.10],
-  )
-  hospital_network = np.random.choice(
-      ["In-Network", "Out-Network"], size=n_samples, p=[0.75, 0.25]
-  )
-  prior_claims_count = np.random.poisson(lam=1.2, size=n_samples)
+  return {
+      "total_risk_score": risk_points,
+      "risk_tier": risk_tier,
+      "clinical_flags": risk_reasons,
+  }
 
-  exceeds_limit = claim_amount > policy_coverage_limit
-  early_preexisting = (policy_tenure_months < 6) & (
-      pre_existing_conditions == 1
-  )
-  unauthorized_elective = (hospital_network == "Out-Network") & (
-      treatment_types == "Elective Surgery"
-  )
-  too_elderly = age > 70  # NEW RULE: Deny coverage for age > 70
-
-  claim_approved = []
-  claim_status_codes = []
-  adjudication_reasons = []
-
-  for i in range(n_samples):
-    if (
-        exceeds_limit[i]
-        or early_preexisting[i]
-        or unauthorized_elective[i]
-        or too_elderly[i]
-    ):
-      approved = np.random.choice([0, 1], p=[0.88, 0.12])
-    else:
-      approved = np.random.choice([1, 0], p=[0.85, 0.15])
-
-    claim_approved.append(approved)
-
-    if approved == 1:
-      claim_status_codes.append("PA_100")
-      adjudication_reasons.append("Approved: Claim met coverage guidelines")
-    else:
-      if too_elderly[i]:
-        claim_status_codes.append("D5_AGE")
-        adjudication_reasons.append(
-            "Denied: Age exceeds maximum underwriting demographic limit (>70"
-            " yrs)"
-        )
-      elif exceeds_limit[i]:
-        claim_status_codes.append("D1_EXP")
-        adjudication_reasons.append(
-            "Denied: Amount exceeds policy coverage limit"
-        )
-      elif early_preexisting[i]:
-        claim_status_codes.append("D2_PRX")
-        adjudication_reasons.append(
-            "Denied: Pre-existing condition within waiting period (<6 mo)"
-        )
-      elif unauthorized_elective[i]:
-        claim_status_codes.append("D3_OON")
-        adjudication_reasons.append(
-            "Denied: Unauthorized out-of-network elective procedure"
-        )
-      else:
-        claim_status_codes.append("D4_GEN")
-        adjudication_reasons.append(
-            "Denied: Incomplete documentation or standard policy exclusions"
-        )
-
-  df = pd.DataFrame({
-      "age": age,
-      "policy_tenure_months": policy_tenure_months,
-      "annual_premium": annual_premium,
-      "pre_existing_conditions": pre_existing_conditions,
-      "treatment_type": treatment_types,
-      "hospital_network": hospital_network,
-      "claim_amount": claim_amount,
-      "policy_coverage_limit": policy_coverage_limit,
-      "prior_claims_count": prior_claims_count,
-      "claim_approved": claim_approved,
-      "claim_status_code": claim_status_codes,
-      "adjudication_reason": adjudication_reasons,
-  })
-
-  df["claim_to_limit_ratio"] = (
-      df["claim_amount"] / df["policy_coverage_limit"]
-  ).round(4)
-
-  feature_cols = [
-      "age",
-      "policy_tenure_months",
-      "annual_premium",
-      "pre_existing_conditions",
-      "treatment_type",
-      "hospital_network",
-      "claim_amount",
-      "policy_coverage_limit",
-      "prior_claims_count",
-      "claim_to_limit_ratio",
-  ]
-
-  X = df[feature_cols]
-  y = df["claim_approved"]
-
-  X_train, X_test, y_train, y_test = train_test_split(
-      X, y, test_size=0.20, stratify=y, random_state=42
-  )
-
-  numerical_features = [
-      "age",
-      "policy_tenure_months",
-      "annual_premium",
-      "claim_amount",
-      "policy_coverage_limit",
-      "prior_claims_count",
-      "claim_to_limit_ratio",
-  ]
-  categorical_features = [
-      "treatment_type",
-      "hospital_network",
-      "pre_existing_conditions",
-  ]
-
-  preprocessor = ColumnTransformer(
-      transformers=[
-          ("num", StandardScaler(), numerical_features),
-          (
-              "cat",
-              OneHotEncoder(handle_unknown="ignore"),
-              categorical_features,
-          ),
-      ]
-  )
-
-  model_pipeline = Pipeline(
-      steps=[
-          ("preprocessor", preprocessor),
-          (
-              "classifier",
-              RandomForestClassifier(
-                  n_estimators=150,
-                  max_depth=10,
-                  class_weight="balanced",
-                  random_state=42,
-              ),
-          ),
-      ]
-  )
-
-  model_pipeline.fit(X_train, y_train)
-
-  y_pred = model_pipeline.predict(X_test)
-  y_proba = model_pipeline.predict_proba(X_test)[:, 1]
-  roc_score = roc_auc_score(y_test, y_proba)
-
-  return df, model_pipeline, roc_score, y_test, y_pred
-
-
-with st.spinner("Compiling enterprise underwriting model..."):
-  df, model_pipeline, roc_score, y_test, y_pred = load_and_train_model()
 
 # -------------------------------------------------------------
-# 2. SIDEBAR CONTROLS
+# 2. SIDEBAR CONTROLS (Dataset Attributes)
 # -------------------------------------------------------------
-st.sidebar.header("📋 Claim & Policy Parameters")
+st.sidebar.header("📋 Patient Clinical Profile")
 
-in_age = st.sidebar.slider("Patient Age", 18, 85, 34)
-in_tenure = st.sidebar.slider("Policy Tenure (Months)", 1, 120, 36)
-in_premium = st.sidebar.number_input("Annual Premium ($)", 300.0, 3500.0, 1200.0)
-in_pre_existing = st.sidebar.selectbox(
-    "Pre-existing Conditions?",
+in_gender = st.sidebar.selectbox("Gender", ["Male", "Female", "Other"])
+in_age = st.sidebar.slider("Patient Age", 18, 90, 45)
+in_bmi = st.sidebar.slider("Body Mass Index (BMI)", 15.0, 45.0, 27.5)
+in_glucose = st.sidebar.number_input(
+    "Avg Glucose Level (mg/dL)", 60.0, 300.0, 95.0
+)
+
+st.sidebar.markdown("---")
+st.sidebar.header("🏥 Medical History & Lifestyle")
+in_hypertension = st.sidebar.selectbox(
+    "Hypertension",
     [0, 1],
-    format_func=lambda x: "Yes" if x == 1 else "No",
+    format_func=lambda x: "Yes (1)" if x == 1 else "No (0)",
 )
-in_treatment = st.sidebar.selectbox(
-    "Treatment Type",
-    [
-        "Outpatient",
-        "Inpatient",
-        "Dental",
-        "Emergency",
-        "Elective Surgery",
-    ],
+in_heart_disease = st.sidebar.selectbox(
+    "Heart Disease",
+    [0, 1],
+    format_func=lambda x: "Yes (1)" if x == 1 else "No (0)",
 )
-in_network = st.sidebar.selectbox(
-    "Hospital Network", ["In-Network", "Out-Network"]
+in_smoking = st.sidebar.selectbox(
+    "Smoking History", ["never", "former", "smokes"]
 )
-in_claim = st.sidebar.number_input(
-    "Claim Amount ($)", 200.0, 50000.0, 3200.0
-)
+
+st.sidebar.markdown("---")
+st.sidebar.header("💰 Policy & Claim Financials")
+in_claim = st.sidebar.number_input("Claim Amount ($)", 100.0, 50000.0, 4500.0)
 in_limit = st.sidebar.selectbox(
-    "Policy Coverage Limit ($)", [5000, 10000, 20000, 50000], index=1
+    "Policy Coverage Limit ($)", [5000, 10000, 25000, 50000], index=1
 )
-in_prior_claims = st.sidebar.slider("Prior Claims Count", 0, 10, 1)
-
-single_claim = pd.DataFrame([{
-    "age": in_age,
-    "policy_tenure_months": in_tenure,
-    "annual_premium": in_premium,
-    "pre_existing_conditions": in_pre_existing,
-    "treatment_type": in_treatment,
-    "hospital_network": in_network,
-    "claim_amount": in_claim,
-    "policy_coverage_limit": in_limit,
-    "prior_claims_count": in_prior_claims,
-    "claim_to_limit_ratio": round(in_claim / in_limit, 4),
-}])
-
+in_tenure = st.sidebar.slider("Policy Tenure (Months)", 1, 60, 18)
 
 # -------------------------------------------------------------
-# 3. HELPER FUNCTION FOR REASON CODES
+# 3. RUN ADJUDICATION ENGINE
 # -------------------------------------------------------------
-def adjudicate_claim(row, prediction):
-  if prediction == 1:
-    return "PA_100", "Approved: Claim meets coverage terms"
+st.markdown("### **Live Adjudication & Clinical Risk Dashboard**")
 
-  if row["age"] > 70:
-    return (
-        "D5_AGE",
-        "Denied: Age exceeds maximum underwriting demographic limit (>70 yrs)",
-    )
-  if row["claim_amount"] > row["policy_coverage_limit"]:
-    return "D1_EXP", "Denied: Exceeds maximum policy limit"
-  if row["policy_tenure_months"] < 6 and row["pre_existing_conditions"] == 1:
-    return (
-        "D2_PRX",
-        "Denied: Pre-existing condition restriction (<6 months tenure)",
-    )
-  if (
-      row["hospital_network"] == "Out-Network"
-      and row["treatment_type"] == "Elective Surgery"
-  ):
-    return (
-        "D3_OON",
-        "Denied: Non-emergency elective service at out-of-network facility",
-    )
-  return "D4_GEN", "Denied: High risk profile / Policy exclusions"
-
-
-# -------------------------------------------------------------
-# 4. DASHBOARD METRICS & INFERENCE OUTPUT
-# -------------------------------------------------------------
-c1, c2, c3 = st.columns(3)
-with c1:
-  st.metric(
-      label="MODEL ROC-AUC",
-      value=f"{roc_score:.4f}",
-      delta="Validated Pipeline",
+if st.sidebar.button("Run Claim Adjudication", type="primary"):
+  clinical_result = evaluate_clinical_risk(
+      gender=in_gender,
+      age=in_age,
+      hypertension=in_hypertension,
+      heart_disease=in_heart_disease,
+      avg_glucose_level=in_glucose,
+      smoking_history=in_smoking,
+      bmi=in_bmi,
   )
-with c2:
-  st.metric(
-      label="DATASET SCALE",
-      value=f"{len(df):,} Records",
-      delta="Training Corpus",
-  )
-with c3:
-  st.metric(label="ENGINE STATUS", value="Operational", delta="Low Latency")
 
-st.markdown("---")
-st.markdown("### **Underwriting Decision & Risk Analysis**")
+  is_excess = in_claim > in_limit
+  is_early = in_tenure < 6
 
-if st.sidebar.button("Run Adjudication Review", type="primary"):
-  prediction = model_pipeline.predict(single_claim)[0]
-  prediction_proba = model_pipeline.predict_proba(single_claim)[0][1]
-  code, reason = adjudicate_claim(single_claim.iloc[0], prediction)
+  approval_prob = 0.90
+  if clinical_result["risk_tier"] == "HIGH RISK":
+    approval_prob -= 0.55
+  elif clinical_result["risk_tier"] == "MODERATE RISK":
+    approval_prob -= 0.25
 
-  if prediction == 1:
-    st.success(
-        f"**STATUS: AUTO-APPROVED (Code: {code})**\n\n**Reason:** {reason}\n\n"
-        f"Payout authorized. (Approval Confidence: {prediction_proba * 100:.1f}%)"
+  if is_excess or is_early:
+    approval_prob = 0.0
+
+  final_prob_str = f"{max(0.0, approval_prob) * 100:.1f}%"
+
+  col1, col2 = st.columns(2)
+
+  with col1:
+    st.markdown("#### 🩺 Clinical Risk Assessment")
+    st.metric(label="Calculated Risk Tier", value=clinical_result["risk_tier"])
+    st.metric(
+        label="Total Risk Score", value=clinical_result["total_risk_score"]
     )
-  else:
-    st.error(
-        f"**STATUS: FLAGGED FOR AUDIT / DENIED (Code: {code})**\n\n**Reason:**"
-        f" {reason}\n\nImmediate review routed to supervisor. (Denial Risk"
-        f" Score: {(1 - prediction_proba) * 100:.1f}%)"
-    )
+
+    if clinical_result["clinical_flags"]:
+      st.warning("⚠️ **Detected Clinical Risk Flags:**")
+      for flag in clinical_result["clinical_flags"]:
+        st.write(f"- {flag}")
+    else:
+      st.success("✅ Patient profile is within normal medical baselines.")
+
+  with col2:
+    st.markdown("#### ⚖️ Financial & Adjudication Decision")
+    if approval_prob < 0.5 or is_excess or is_early:
+      reason = (
+          "Claim amount exceeds coverage limit."
+          if is_excess
+          else (
+              "Policy tenure under 6-month waiting period."
+              if is_early
+              else "High clinical risk profile breached underwriting"
+              " thresholds."
+          )
+      )
+      st.error(
+          f"**STATUS: FLAGGED FOR AUDIT / DENIED**\n\n**Reason:**"
+          f" {reason}\n\n**Approval Probability:** {final_prob_str}"
+      )
+    else:
+      st.success(
+          "**STATUS: AUTO-APPROVED (Code: PA_100)**\n\nClaim verified against"
+          f" medical baselines and policy terms.\n\n**Approval Probability:**"
+          f" {final_prob_str}"
+      )
 else:
   st.info(
-      "👈 Adjust claim parameters in the left sidebar and click **Run"
-      " Adjudication Review** to evaluate a submission."
-  )
-
-st.markdown("---")
-with st.expander("🔍 System Diagnostics & Confusion Matrix"):
-  st.text(str(confusion_matrix(y_test, y_pred)))
-  st.text(
-      classification_report(
-          y_test, y_pred, target_names=["Denied (0)", "Approved (1)"]
-      )
+      "👈 Configure patient health stats and policy parameters in the left"
+      " sidebar, then click **Run Claim Adjudication**."
   )
